@@ -24,7 +24,7 @@ A command-line tool that allows you to split a Tidal playlist into multiple segm
 1. Clone the repository or download the script:
 
 ```bash
-git clone https://github.com/yourusername/tidal-playlist-splitter.git
+git clone https://github.com/JoeCat1207/tidal-playlist-splitter.git
 cd tidal-playlist-splitter
 ```
 
