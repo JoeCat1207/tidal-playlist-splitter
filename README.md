@@ -61,6 +61,7 @@ This will split the playlist into 5 segments and name them "My Split 1 of 5 - Or
 | `--prefix` | "Segment" | Prefix for the new playlist names |
 | `--naming-pattern` | "{prefix} {index} - {playlist}" | Pattern for naming new playlists |
 | `--description-pattern` | "Segment {index} of {total} from {playlist}" | Pattern for playlist descriptions |
+|'--batch-size'|"NA"|"add any number behind this to specify batch sizing, will fix rate limit issues for extra long playlists"|
 
 ### Naming Pattern Variables:
 
