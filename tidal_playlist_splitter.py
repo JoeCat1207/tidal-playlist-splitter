@@ -50,6 +50,101 @@ def split_playlist(tracks, num_segments):
     
     return segments
 
+def get_all_tracks(playlist, session):
+    """
+    Get all tracks from a playlist with pagination handling.
+    """
+    all_tracks = []
+    page_size = 100  # Fetch 100 tracks at a time
+    offset = 0
+    
+    print("Fetching playlist tracks (this may take a while for large playlists)...")
+    
+    while True:
+        try:
+            # Try to get tracks with pagination parameters if the API supports it
+            if hasattr(playlist, 'items') and callable(playlist.items):
+                # Some versions support offset/limit parameters
+                try:
+                    tracks_page = list(playlist.items(offset=offset, limit=page_size))
+                except TypeError:
+                    # If parameters aren't supported, fall back to default method
+                    if offset == 0:  # Only do this once
+                        tracks_page = list(playlist.items())
+                    else:
+                        break  # We've already fetched all we can
+            elif hasattr(playlist, 'tracks') and callable(playlist.tracks):
+                try:
+                    tracks_page = list(playlist.tracks(offset=offset, limit=page_size))
+                except TypeError:
+                    if offset == 0:
+                        tracks_page = list(playlist.tracks())
+                    else:
+                        break
+            else:
+                # Last resort - try to access tracks as a property
+                if offset == 0:  # Can only do this once
+                    tracks_page = list(playlist.tracks)
+                else:
+                    break
+            
+            # If we got an empty page or fewer items than requested, we're done
+            if not tracks_page:
+                break
+                
+            all_tracks.extend(tracks_page)
+            print(f"Fetched {len(all_tracks)} tracks so far...")
+            
+            # If we got fewer items than the page size, we've reached the end
+            if len(tracks_page) < page_size:
+                break
+                
+            # Move to the next page
+            offset += page_size
+            
+            # Add a small delay to avoid rate limiting
+            time.sleep(0.5)
+            
+        except Exception as e:
+            print(f"Error while fetching tracks at offset {offset}: {e}")
+            # Try to continue with what we have
+            break
+    
+    return all_tracks
+
+def add_tracks_with_retry(playlist, track_ids, batch_size=50):
+    """
+    Add tracks to a playlist in batches with retry logic.
+    """
+    total_tracks = len(track_ids)
+    tracks_added = 0
+    
+    for i in range(0, total_tracks, batch_size):
+        batch = track_ids[i:i+batch_size]
+        retries = 3
+        success = False
+        
+        while retries > 0 and not success:
+            try:
+                playlist.add(batch)
+                success = True
+                tracks_added += len(batch)
+                print(f"Added batch of {len(batch)} tracks ({tracks_added}/{total_tracks})")
+            except Exception as e:
+                retries -= 1
+                print(f"Error adding tracks: {e}, retries left: {retries}")
+                if retries > 0:
+                    print("Waiting 5 seconds before retrying...")
+                    time.sleep(5)
+        
+        if not success:
+            print(f"Failed to add batch starting at track {i} after multiple retries")
+        
+        # Add a small delay between successful batches to avoid rate limiting
+        time.sleep(1)
+    
+    return tracks_added
+
 def main():
     """Main function to execute the script."""
     parser = argparse.ArgumentParser(description='Split a Tidal playlist into segments and create new playlists.')
@@ -60,6 +155,8 @@ def main():
                         help='Pattern for naming new playlists. Available variables: {prefix}, {index}, {playlist}, {total}')
     parser.add_argument('--description-pattern', default='Segment {index} of {total} from {playlist}',
                         help='Pattern for playlist descriptions. Available variables: {index}, {total}, {playlist}')
+    parser.add_argument('--batch-size', type=int, default=50, 
+                       help='Number of tracks to add in a single batch (default: 50)')
     args = parser.parse_args()
     
     # Validate input
@@ -75,14 +172,14 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         return 1
     
-    # Initialize Tidal session - exactly as tidallister.py does
+    # Initialize Tidal session
     config = tidalapi.Config()
     session = tidalapi.Session(config)
     
-    # Handle login exactly the same way as tidallister.py
+    # Handle login 
     print("\nLogging in to Tidal...")
     try:
-        # Use the exact same approach as tidallister.py
+        # Use the login_oauth method
         login, future = session.login_oauth()
         
         # Print the login URL
@@ -91,12 +188,11 @@ def main():
         # Call login_oauth_simple which seems to be needed for the process to work
         session.login_oauth_simple()
         
-        # Wait for authentication by repeatedly checking login status
+        # Wait for authentication
         print("Waiting for authentication...")
         timeout = login.expires_in
         start_time = time.time()
         
-        # Keep checking until we're logged in or time out
         while not session.check_login():
             if time.time() - start_time > timeout:
                 print("Login timed out. Please try again.")
@@ -112,14 +208,13 @@ def main():
     # Get the source playlist
     try:
         print(f"\nFetching playlist with ID: {playlist_id}")
-        # Use playlist() method as in tidallister.py
         source_playlist = session.playlist(playlist_id)
         print(f"Found playlist: {source_playlist.name}")
         
-        # Get tracks using tracks() method
-        print("Fetching tracks...")
-        tracks_list = list(source_playlist.tracks())
-        print(f"Playlist has {len(tracks_list)} tracks")
+        # Get all tracks with pagination handling
+        tracks_list = get_all_tracks(source_playlist, session)
+        
+        print(f"Successfully retrieved all {len(tracks_list)} tracks")
         
     except Exception as e:
         print(f"Error retrieving playlist: {e}", file=sys.stderr)
@@ -151,19 +246,27 @@ def main():
             new_playlist_name = f"{args.prefix} {i} - {source_playlist.name[:40]}..."
         
         try:
-            # Create new playlist - using the exact same approach as tidallister.py
+            # Create new playlist
             print(f"\nCreating playlist '{new_playlist_name}'...")
             new_playlist = session.user.create_playlist(new_playlist_name, new_playlist_description)
             
             # Get track IDs for adding to the playlist
             track_ids = [track.id for track in segment]
             
-            # Add tracks using add() method as in tidallister.py
+            # Add tracks in batches with retry logic
             print(f"Adding {len(segment)} tracks to the new playlist...")
-            new_playlist.add(track_ids)
+            tracks_added = add_tracks_with_retry(new_playlist, track_ids, args.batch_size)
             
-            print(f"Created playlist '{new_playlist_name}' with {len(segment)} tracks")
+            # Check if all tracks were added successfully
+            if tracks_added == len(segment):
+                print(f"Created playlist '{new_playlist_name}' with all {len(segment)} tracks")
+            else:
+                print(f"Created playlist '{new_playlist_name}' but only added {tracks_added}/{len(segment)} tracks")
+            
             print(f"Playlist URL: https://tidal.com/browse/playlist/{new_playlist.id}")
+            
+            # Small delay between creating playlists to avoid rate limiting
+            time.sleep(2)
             
         except Exception as e:
             print(f"Error creating segment {i}: {e}", file=sys.stderr)
